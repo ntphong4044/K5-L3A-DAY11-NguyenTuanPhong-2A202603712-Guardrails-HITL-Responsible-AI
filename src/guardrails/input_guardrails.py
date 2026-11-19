@@ -122,6 +122,44 @@ def detect_injection(user_input: str) -> InputStatus:
     return "ALLOW"
 
 
+# SQL / code injection: look for SQL *structure*, not single words, so normal
+# banking sentences ("delete a payee from my account", "select a card") pass.
+SQL_INJECTION_PATTERNS = [
+    # Stacked query: "; DROP ..." / "; DELETE ..."
+    r";\s*(drop|delete|truncate|alter|insert|update|create|exec|shutdown)\b",
+    # DROP / TRUNCATE a table or database
+    r"\b(drop|truncate)\s+(table|database|schema)\b",
+    # UNION-based extraction
+    r"\bunion\s+(all\s+)?select\b",
+    # SELECT * FROM ...  or  SELECT col FROM tbl WHERE ...
+    r"\bselect\s+\*\s+from\b",
+    r"\bselect\b.{1,80}?\bfrom\b.{1,80}?\bwhere\b",
+    # Tautology: ' OR '1'='1   /   " or 1=1
+    r"['\"]\s*or\s+['\"]?\w+['\"]?\s*=\s*['\"]?\w+",
+    r"\bor\s+1\s*=\s*1\b",
+    # SQL comment used to cut off the rest of a query
+    r"('|\"|\))\s*(--|#)|--\s*$|/\*.*?\*/",
+    # Dangerous procedures / time-based blind injection
+    r"\b(xp_cmdshell|exec\s*\(|sleep\s*\(\s*\d+|benchmark\s*\(|waitfor\s+delay)",
+]
+_SQL_RE = [re.compile(p, re.IGNORECASE | re.DOTALL) for p in SQL_INJECTION_PATTERNS]
+
+
+def detect_sql_injection(user_input: str) -> InputStatus:
+    """Return ``"BLOCK"`` if the text looks like an SQL injection payload.
+
+    The Blue agent has no database tool, so this is defense-in-depth: it stops
+    the payload from reaching the LLM / logs / any future tool that might build
+    a query from user text. The real fix in a DB layer is still parameterized
+    queries — never string-concatenate user input into SQL.
+    """
+    text = normalize_text(user_input)
+    for pattern in _SQL_RE:
+        if pattern.search(text):
+            return "BLOCK"
+    return "ALLOW"
+
+
 def _keyword_regex(keyword: str) -> re.Pattern:
     # Word boundary on the left only: "account" matches "accounts",
     # but "kill" does not match "skill" and "vay" does not match "always".
@@ -242,6 +280,14 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
             return self._block_response(
                 "I cannot process that request. I can only help with VinBank "
                 "banking questions (accounts, transfers, savings, loans, cards)."
+            )
+
+        if detect_sql_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            self.last_layer = "input_sql_injection"
+            return self._block_response(
+                "Your message contains code-like content that I cannot process. "
+                "Please ask your banking question in plain language."
             )
 
         if topic_filter(text) == "BLOCK":

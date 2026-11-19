@@ -41,17 +41,69 @@ class MonitoringAlert:
     judge_checks: int = 0
     judge_fails: int = 0
 
-    def check_metrics(self) -> list[Alert]:
-        """TODO: compute rates, append Alert objects when thresholds exceeded."""
-        raise NotImplementedError("Implement MonitoringAlert.check_metrics")
+    def record(self, *, blocked: bool, layer: str | None = None) -> None:
+        """Update counters after one request (called by the pipeline)."""
+        self.total_requests += 1
+        if blocked:
+            self.blocked_requests += 1
+        if layer == "rate_limiter":
+            self.rate_limit_hits += 1
 
-    def export_json(self, filepath: str | None = None):
-        """TODO: write metrics + alerts to JSON under repo-root ``outputs/`` by default.
-        Use ``filepath or default_metrics_path()`` so running from ``src/`` does not
-        create ``src/outputs/``.
+    def check_metrics(self) -> list[Alert]:
+        """Recompute rates and return the alerts that are currently firing.
+
+        The list is rebuilt on every call, so calling it repeatedly does not
+        pile up duplicate alerts.
         """
-        _ = filepath or default_metrics_path()
-        raise NotImplementedError("Implement MonitoringAlert.export_json")
+        snap = self.snapshot()
+        alerts: list[Alert] = []
+        if self.total_requests and snap["block_rate"] > self.block_rate_threshold:
+            alerts.append(Alert(
+                metric="block_rate",
+                value=round(snap["block_rate"], 3),
+                threshold=self.block_rate_threshold,
+                message=(
+                    f"High block rate: {self.blocked_requests}/{self.total_requests} "
+                    "requests blocked — possible attack campaign or false positives."
+                ),
+            ))
+        if self.rate_limit_hits >= self.rate_limit_hit_threshold:
+            alerts.append(Alert(
+                metric="rate_limit_hits",
+                value=float(self.rate_limit_hits),
+                threshold=float(self.rate_limit_hit_threshold),
+                message=(
+                    f"{self.rate_limit_hits} rate-limit hits — a client may be "
+                    "flooding the service (cost / DoS attack)."
+                ),
+            ))
+        if self.judge_checks and snap["judge_fail_rate"] > self.judge_fail_rate_threshold:
+            alerts.append(Alert(
+                metric="judge_fail_rate",
+                value=round(snap["judge_fail_rate"], 3),
+                threshold=self.judge_fail_rate_threshold,
+                message="LLM judge flags too many responses as unsafe.",
+            ))
+        self.alerts = alerts
+        return alerts
+
+    def export_json(self, filepath: str | None = None) -> str:
+        """Write metrics + alerts to JSON under repo-root ``outputs/`` by default."""
+        self.check_metrics()
+        path = Path(filepath or default_metrics_path())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "thresholds": {
+                "block_rate": self.block_rate_threshold,
+                "rate_limit_hits": self.rate_limit_hit_threshold,
+                "judge_fail_rate": self.judge_fail_rate_threshold,
+            },
+            **self.snapshot(),
+        }
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return str(path)
 
     def snapshot(self) -> dict:
         block_rate = (
