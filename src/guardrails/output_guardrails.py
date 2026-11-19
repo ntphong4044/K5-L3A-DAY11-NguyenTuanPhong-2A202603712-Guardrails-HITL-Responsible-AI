@@ -37,20 +37,27 @@ def content_filter(response: str) -> dict:
         dict with 'safe', 'issues', and 'redacted' keys
     """
     issues = []
-    redacted = response
+    redacted = response or ""
 
-    # PII patterns to check
+    # Order matters: specific secrets first, then generic PII.
+    # \b boundaries keep a 12-digit CCCD from also matching as a phone number.
     PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
+        # Secrets
+        "api_key": r"\bsk-[A-Za-z0-9_-]{6,}",
+        "password": (
+            r"\b(?:password|passwd|pwd|mật\s*khẩu|mat\s*khau)\b"
+            r"\s*(?:is|là|la|:|=)\s*[\"'`]?[^\s,;\"'`]+"
+        ),
+        "internal_host": r"\b[\w.-]+\.internal(?::\d{2,5})?\b",
+        "known_secret": r"\badmin123\b",
+        # PII
+        "email": r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\b",
+        "phone": r"(?<!\d)(?:\+84|84|0)\d{9,10}(?!\d)",
+        "national_id": r"(?<!\d)(?:\d{12}|\d{9})(?!\d)",
     }
 
     for name, pattern in PII_PATTERNS.items():
-        matches = re.findall(pattern, response, re.IGNORECASE)
+        matches = re.findall(pattern, redacted, re.IGNORECASE)
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
@@ -149,6 +156,8 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         self.blocked_count = 0
         self.redacted_count = 0
         self.total_count = 0
+        self.last_issues: list[str] = []
+        self.last_action: str | None = None  # "redacted" | "blocked" | None
 
     def _extract_text(self, llm_response) -> str:
         """Extract text from LLM response."""
@@ -172,16 +181,35 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        self.last_issues = []
+        self.last_action = None
 
-        return llm_response  # TODO: modify if needed
+        # 1. Deterministic redaction of secrets / PII
+        result = content_filter(response_text)
+        if not result["safe"]:
+            self.redacted_count += 1
+            self.last_issues = result["issues"]
+            self.last_action = "redacted"
+            response_text = result["redacted"]
+            llm_response.content = types.Content(
+                role="model", parts=[types.Part.from_text(text=response_text)]
+            )
+
+        # 2. Optional LLM judge (off by default for the graded pipeline)
+        if self.use_llm_judge:
+            verdict = await llm_safety_check(response_text)
+            if not verdict["safe"]:
+                self.blocked_count += 1
+                self.last_action = "blocked"
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(
+                        text="I'm sorry, I can't share that. "
+                        "I can help with VinBank accounts, transfers, savings and loans."
+                    )],
+                )
+
+        return llm_response
 
 
 # ============================================================
