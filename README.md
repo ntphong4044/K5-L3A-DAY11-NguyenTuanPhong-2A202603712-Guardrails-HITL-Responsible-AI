@@ -1,5 +1,19 @@
 # Day 11 — Controlled Agent Security (2026)
 
+> **Học viên:** Nguyễn Tuấn Phong · **MSSV:** 2A202603712 · **Lớp:** K5-L3A
+>
+> **Cách chạy (từ gốc repo, sau khi điền `.env`):**
+> ```bash
+> python src/main.py --part 2   # CP2 guardrails (in terminal)
+> python src/main.py --part 3   # CP3 → outputs/results.json, audit_log.json, metrics.json
+> python src/main.py --part 4   # CP4 → outputs/attack_results.json (Red + Red Advance)
+> pytest tests/smoke tests/public tests/student -q
+> python scripts/grade.py --submission-dir . --out outputs/grade_report.json
+> ```
+> **Kết quả:** safe bị chặn 0/6 · attack bị chặn 8/9 · rate limit 10 qua / 5 chặn · egress 7/7 đúng ·
+> Red leak 5/5 · Red Advance leak 0/5 → chọn bonus **B1**.
+> Thêm ngoài yêu cầu: chặn SQL injection ở input guardrail, `tests/student/` (PII dataset + SQL).
+
 > 👤 **Hình thức:** bài tập **cá nhân** (1 người / 1 MSSV).  
 > 🎯 **Mục tiêu:** đóng vai **Blue Team** để học cách xây Guardrails phòng thủ, rồi đóng vai **Red Team** để tấn công agent **Red** hoặc **Red Advance**.  
 > ✅ Làm theo **Checkpoint 1 → 5** trong [`CHECKPOINTS.md`](CHECKPOINTS.md) · nộp theo [`SUBMISSION.md`](SUBMISSION.md).
